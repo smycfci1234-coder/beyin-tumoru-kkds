@@ -196,7 +196,7 @@ if uploaded_file is not None:
 
     heatmap_resized = np.array(Image.fromarray(heatmap).resize(IMG_SIZE))
     base_img = np.array(img_resized).astype("float32")
-    jet = cm.get_cmap("jet")
+    jet = cm.jet
     jet_heatmap = jet(heatmap_resized)[..., :3] * 255
     gradcam_overlay = (base_img * 0.55 + jet_heatmap * 0.45).astype("uint8")
 
