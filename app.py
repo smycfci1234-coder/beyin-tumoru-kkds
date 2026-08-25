@@ -141,7 +141,7 @@ MODEL_METRICS = {"Sınıflandırma": "%90.1", "Segmentasyon mAP50": "%90.4"}
 
 @st.cache_resource
 def load_classification_model():
-    return tf.keras.models.load_model("best_model_v2.keras")
+    return tf.keras.models.load_model("best_model_v3.keras")
 
 @st.cache_resource
 def load_segmentation_model():
