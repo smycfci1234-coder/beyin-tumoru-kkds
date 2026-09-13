@@ -88,6 +88,6 @@ beyin-tumoru-kkds/
 - **Danışman:** Öğr. Gör. Dr. Emre ÖZGÜL
 - **Kurum:** Zonguldak Bülent Ecevit Üniversitesi / Zonguldak Teknopark
 
-## 📄 Lisans
+## 📄 Önlisans
 
 Bu proje akademik/araştırma amaçlıdır.
