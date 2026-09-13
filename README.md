@@ -84,10 +84,10 @@ beyin-tumoru-kkds/
 
 ## 👥 Proje Ekibi
 
-- **Yürütücü:** Sümeyye ÇİFÇİ
+- **Yürütücü:** Sümeyye ÇİFÇİ (Önlisans Öğrencisi, Büyük Veri Analistliği)
 - **Danışman:** Öğr. Gör. Dr. Emre ÖZGÜL
 - **Kurum:** Zonguldak Bülent Ecevit Üniversitesi / Zonguldak Teknopark
 
-## 📄 Önlisans
+## 📄 Kullanım Şartları
 
 Bu proje akademik/araştırma amaçlıdır.
