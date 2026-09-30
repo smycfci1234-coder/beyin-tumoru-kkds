@@ -9,6 +9,56 @@ import numpy as np
 from PIL import Image
 import matplotlib.cm as cm
 from datetime import datetime
+import sqlite3
+import time
+import uuid
+
+ARSIV_KLASORU = "arsiv"
+os.makedirs(ARSIV_KLASORU, exist_ok=True)
+
+DB_PATH = "analiz_gecmisi.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS analizler (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dosya_adi TEXT,
+            tahmin TEXT,
+            guven REAL,
+            tarih TEXT,
+            islem_suresi_sn REAL,
+            orijinal_gorsel TEXT,
+            islenmis_gorsel TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def kaydet_analiz(dosya_adi, tahmin, guven, islem_suresi_sn, orijinal_gorsel_yolu, islenmis_gorsel_yolu):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """INSERT INTO analizler
+           (dosya_adi, tahmin, guven, tarih, islem_suresi_sn, orijinal_gorsel, islenmis_gorsel)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (dosya_adi, tahmin, guven, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+         islem_suresi_sn, orijinal_gorsel_yolu, islenmis_gorsel_yolu)
+    )
+    conn.commit()
+    conn.close()
+
+def son_analizleri_getir(limit=5):
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        """SELECT dosya_adi, tahmin, guven, tarih, islem_suresi_sn, orijinal_gorsel, islenmis_gorsel
+           FROM analizler ORDER BY id DESC LIMIT ?""",
+        (limit,)
+    ).fetchall()
+    conn.close()
+    return rows
+
+init_db()
+
 st.set_page_config(
     page_title="Brain AI DSS",
     page_icon="🧠",
@@ -188,6 +238,7 @@ st.markdown(f"""
 uploaded_file = st.file_uploader("MR görüntüsü yükle", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
 
 if uploaded_file is not None:
+    baslangic_zamani = time.time()
     image = Image.open(uploaded_file).convert("RGB")
     with st.spinner("Analiz ediliyor..."):
         clf_model = load_classification_model()
@@ -209,6 +260,19 @@ if uploaded_file is not None:
         center_display_img = result.plot()[..., ::-1]
     else:
         center_display_img = np.array(image)
+
+    islem_suresi = time.time() - baslangic_zamani
+
+    benzersiz_id = uuid.uuid4().hex[:8]
+    orijinal_yol = os.path.join(ARSIV_KLASORU, f"{benzersiz_id}_orijinal.png")
+    islenmis_yol = os.path.join(ARSIV_KLASORU, f"{benzersiz_id}_islenmis.png")
+    image.save(orijinal_yol)
+    Image.fromarray(center_display_img.astype("uint8")).save(islenmis_yol)
+
+    kaydet_analiz(
+        uploaded_file.name, pred_class, float(confidence),
+        islem_suresi, orijinal_yol, islenmis_yol
+    )
 
 left, center, right = st.columns([1.1, 1.6, 1.1], gap="medium")
 
@@ -259,6 +323,25 @@ with right:
                 st.progress(float(probs[idx]), text=f"{CLASS_LABELS_TR[cname]}: %{probs[idx]*100:.1f}")
         else:
             st.caption("Görüntü yüklendiğinde model tahmini ve olasılık dağılımı burada gösterilecek.")
+
+if uploaded_file is not None:
+    st.caption(f"⏱️ İşlem süresi: {islem_suresi:.2f} saniye")
+
+with st.expander("🗄️ Analiz Arşivi (Son 5 Kayıt)"):
+    gecmis = son_analizleri_getir(5)
+    if gecmis:
+        for dosya, tahmin, guven, tarih, sure, orij_yol, islenmis_yol in gecmis:
+            st.markdown(f"**{tarih}** — {dosya[:25]} → {CLASS_LABELS_TR.get(tahmin, tahmin)} (%{guven:.1f}) — {sure:.2f}s")
+            c1, c2 = st.columns(2)
+            with c1:
+                if os.path.exists(orij_yol):
+                    st.image(orij_yol, caption="Orijinal", use_container_width=True)
+            with c2:
+                if os.path.exists(islenmis_yol):
+                    st.image(islenmis_yol, caption="İşlenmiş", use_container_width=True)
+            st.divider()
+    else:
+        st.caption("Henüz analiz geçmişi yok.")
 
 st.markdown(
     '<div class="footer-note">⚠️ Bu sistem bir araştırma prototipidir, klinik teşhis yerine geçmez. '
