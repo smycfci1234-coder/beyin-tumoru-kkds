@@ -8,3 +8,5 @@ pillow
 numpy
 opencv-python-headless
 matplotlib
+pandas
+fpdf2

@@ -13,6 +13,7 @@ from datetime import datetime
 import sqlite3
 import time
 import uuid
+from fpdf import FPDF
 
 ARSIV_KLASORU = "arsiv"
 os.makedirs(ARSIV_KLASORU, exist_ok=True)
@@ -20,6 +21,7 @@ os.makedirs(ARSIV_KLASORU, exist_ok=True)
 DB_PATH = "analiz_gecmisi.db"
 MAX_GORSEL = 4          # tek seferde en fazla 4 görsel
 HEDEF_SURE_SN = 10.0    # proje önerisindeki hedef: görsel başına < 10 sn
+DUSUK_GUVEN_ESIGI = 70.0  # bu değerin altındaki tahminlerde uyarı gösterilir
 
 
 # ----------------------------------------------------------------------------
@@ -39,11 +41,10 @@ def init_db():
             islenmis_gorsel TEXT
         )
     """)
-    # Eski veritabanına batch_id sütununu güvenle ekle
     try:
         conn.execute("ALTER TABLE analizler ADD COLUMN batch_id TEXT")
     except sqlite3.OperationalError:
-        pass  # sütun zaten var
+        pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS batch_performans (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,6 +107,32 @@ def son_analizleri_getir(limit=5):
     ).fetchall()
     conn.close()
     return rows
+
+
+def tum_analizleri_getir(sinif_filtre=None, baslangic=None, bitis=None):
+    conn = sqlite3.connect(DB_PATH)
+    sorgu = "SELECT dosya_adi, tahmin, guven, tarih, islem_suresi_sn FROM analizler WHERE 1=1"
+    parametreler = []
+    if sinif_filtre:
+        sorgu += " AND tahmin = ?"
+        parametreler.append(sinif_filtre)
+    if baslangic:
+        sorgu += " AND tarih >= ?"
+        parametreler.append(baslangic.strftime("%Y-%m-%d 00:00:00"))
+    if bitis:
+        sorgu += " AND tarih <= ?"
+        parametreler.append(bitis.strftime("%Y-%m-%d 23:59:59"))
+    sorgu += " ORDER BY id DESC"
+    rows = conn.execute(sorgu, parametreler).fetchall()
+    conn.close()
+    return rows
+
+
+def toplam_analiz_sayisi():
+    conn = sqlite3.connect(DB_PATH)
+    sayi = conn.execute("SELECT COUNT(*) FROM analizler").fetchone()[0]
+    conn.close()
+    return sayi
 
 
 init_db()
@@ -289,8 +316,6 @@ def make_gradcam_heatmap(img_array, model, last_conv_layer_name):
 
 @st.cache_resource
 def modelleri_yukle_ve_isit():
-    """Modelleri yükler ve bir kez sahte girdi ile çalıştırır (warm-up).
-    Böylece ölçülen süreler model yükleme / ilk çalıştırma gecikmesini içermez."""
     clf = load_classification_model()
     seg = load_segmentation_model()
     make_gradcam_heatmap(np.zeros((1, IMG_SIZE[0], IMG_SIZE[1], 3), dtype="float32"),
@@ -305,7 +330,6 @@ def modelleri_yukle_ve_isit():
 def analiz_et(image, dosya_adi, clf_model, seg_model):
     t_basla = time.perf_counter()
 
-    # 1) Sınıflandırma + Grad-CAM
     t0 = time.perf_counter()
     img_resized = image.resize(IMG_SIZE)
     img_array = np.expand_dims(np.array(img_resized), axis=0).astype("float32")
@@ -319,7 +343,6 @@ def analiz_et(image, dosya_adi, clf_model, seg_model):
     gradcam_overlay = (base_img * 0.55 + jet_heatmap * 0.45).astype("uint8")
     sinif_sure = time.perf_counter() - t0
 
-    # 2) Segmentasyon (yalnızca tümör varsa)
     seg_sure = 0.0
     if pred_class != "notumor":
         t1 = time.perf_counter()
@@ -351,13 +374,14 @@ def arsive_kaydet(r, batch_id):
     islenmis_yol = os.path.join(ARSIV_KLASORU, f"{benzersiz_id}_islenmis.png")
     r["image"].save(orijinal_yol)
     Image.fromarray(r["center_display_img"].astype("uint8")).save(islenmis_yol)
+    # Yollar, PDF raporu gibi sonraki işlemlerde kullanılabilsin diye r içine de yazılır
+    r["orijinal_yol"] = orijinal_yol
+    r["islenmis_yol"] = islenmis_yol
     kaydet_analiz(r["dosya_adi"], r["pred_class"], r["confidence"],
                   r["toplam_sure"], orijinal_yol, islenmis_yol, batch_id)
 
 
 def benchmark_calistir(items, clf_model, seg_model, tekrar=3):
-    """1, 2 ve 4 görsel için toplam/ortalama süreyi ölçer (arşive kaydetmez).
-    Görsel sayısı 4'ten azsa görseller tekrar edilerek 4'e tamamlanır."""
     havuz = (items * MAX_GORSEL)[:MAX_GORSEL]
     satirlar = []
     for n in (1, 2, 4):
@@ -375,6 +399,53 @@ def benchmark_calistir(items, clf_model, seg_model, tekrar=3):
             "Tekrar": tekrar,
         })
     return pd.DataFrame(satirlar)
+
+
+# ----------------------------------------------------------------------------
+# PDF RAPORU
+# ----------------------------------------------------------------------------
+def pdf_metin(s):
+    degisim = {
+        "İ": "I", "I": "I", "ı": "i", "Ş": "S", "ş": "s",
+        "Ğ": "G", "ğ": "g", "Ü": "U", "ü": "u", "Ö": "O", "ö": "o", "Ç": "C", "ç": "c"
+    }
+    for k, v in degisim.items():
+        s = s.replace(k, v)
+    return s
+
+
+def olustur_pdf_raporu(r):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "Beyin Tumoru MR Analiz Raporu", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("Helvetica", "", 11)
+    pdf.ln(2)
+    pdf.cell(0, 8, pdf_metin(f"Dosya: {r['dosya_adi']}"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, pdf_metin(f"Tahmin: {CLASS_LABELS_TR[r['pred_class']]}"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, f"Guven Skoru: %{r['confidence']:.1f}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, f"Islem Suresi: {r['toplam_sure']:.2f} sn", new_x="LMARGIN", new_y="NEXT")
+
+    if r["confidence"] < DUSUK_GUVEN_ESIGI:
+        pdf.ln(3)
+        pdf.set_text_color(200, 0, 0)
+        pdf.multi_cell(0, 7, "UYARI: Bu tahminin guven skoru dusuktur, ikinci bir degerlendirme onerilir.")
+        pdf.set_text_color(0, 0, 0)
+
+    pdf.ln(4)
+    img_y = pdf.get_y()
+    if r.get("orijinal_yol") and os.path.exists(r["orijinal_yol"]):
+        pdf.image(r["orijinal_yol"], x=10, y=img_y, w=90)
+    if r.get("islenmis_yol") and os.path.exists(r["islenmis_yol"]):
+        pdf.image(r["islenmis_yol"], x=108, y=img_y, w=90)
+
+    pdf.ln(95)
+    pdf.set_font("Helvetica", "I", 9)
+    pdf.multi_cell(0, 6, "Bu rapor bir arastirma prototipi tarafindan uretilmistir, klinik teshis yerine gecmez.")
+
+    return bytes(pdf.output())
 
 
 # ----------------------------------------------------------------------------
@@ -407,6 +478,10 @@ def render_sonuc(r):
     with right:
         with st.container(border=True):
             st.markdown('<div class="panel-title">Karar Destek Özeti</div>', unsafe_allow_html=True)
+
+            if confidence < DUSUK_GUVEN_ESIGI:
+                st.warning("⚠️ Güven skoru düşük — ikinci bir değerlendirme/uzman görüşü önerilir.", icon="⚠️")
+
             diag_class = "notumor" if pred_class == "notumor" else "tumor"
             st.markdown(f"""
             <div class="diag-box">
@@ -425,6 +500,14 @@ def render_sonuc(r):
             st.markdown('<div class="diag-label" style="margin-top:0.6rem;">Tüm Sınıf Olasılıkları</div>', unsafe_allow_html=True)
             for idx, cname in enumerate(CLASS_NAMES):
                 st.progress(float(probs[idx]), text=f"{CLASS_LABELS_TR[cname]}: %{probs[idx]*100:.1f}")
+
+            st.write("")
+            pdf_bytes = olustur_pdf_raporu(r)
+            st.download_button(
+                "📄 PDF Rapor İndir", data=pdf_bytes,
+                file_name=f"rapor_{r['dosya_adi'].rsplit('.', 1)[0]}.pdf",
+                mime="application/pdf", use_container_width=True
+            )
 
 
 def render_bos_durum():
@@ -499,6 +582,53 @@ def render_performans(sonuclar, batch_toplam, clf_model, seg_model):
         st.dataframe(gdf, use_container_width=True, hide_index=True)
 
 
+def render_arsiv():
+    st.markdown('<div class="panel-title">Analiz Arşivi</div>', unsafe_allow_html=True)
+
+    toplam = toplam_analiz_sayisi()
+    st.markdown(f"**Bugüne kadar toplam {toplam} analiz yapıldı.**")
+
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
+        sinif_secimi = st.selectbox("Sınıfa göre filtrele", ["Tümü"] + [CLASS_LABELS_TR[c] for c in CLASS_NAMES])
+    with fc2:
+        baslangic_tarihi = st.date_input("Başlangıç tarihi", value=None)
+    with fc3:
+        bitis_tarihi = st.date_input("Bitiş tarihi", value=None)
+
+    ters_etiket = {v: k for k, v in CLASS_LABELS_TR.items()}
+    sinif_filtre = ters_etiket.get(sinif_secimi) if sinif_secimi != "Tümü" else None
+
+    filtreli = tum_analizleri_getir(sinif_filtre, baslangic_tarihi, bitis_tarihi)
+
+    if filtreli:
+        arsiv_df = pd.DataFrame(filtreli, columns=["Dosya", "Tahmin", "Güven (%)", "Tarih", "Süre (sn)"])
+        arsiv_df["Tahmin"] = arsiv_df["Tahmin"].map(lambda t: CLASS_LABELS_TR.get(t, t))
+        st.dataframe(arsiv_df, use_container_width=True, hide_index=True)
+
+        csv_veri = arsiv_df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("⬇️ CSV Olarak İndir", data=csv_veri, file_name="analiz_arsivi.csv", mime="text/csv")
+    else:
+        st.caption("Bu filtreyle eşleşen kayıt bulunamadı.")
+
+    st.divider()
+    st.markdown("**Son 5 Kayıt (Görsellerle)**")
+    gecmis = son_analizleri_getir(5)
+    if gecmis:
+        for dosya, tahmin, guven, tarih, sure, orij_yol, islenmis_yol in gecmis:
+            st.markdown(f"**{tarih}** — {dosya[:25]} → {CLASS_LABELS_TR.get(tahmin, tahmin)} (%{guven:.1f}) — {sure:.2f}s")
+            c1, c2 = st.columns(2)
+            with c1:
+                if os.path.exists(orij_yol):
+                    st.image(orij_yol, caption="Orijinal", use_container_width=True)
+            with c2:
+                if os.path.exists(islenmis_yol):
+                    st.image(islenmis_yol, caption="İşlenmiş", use_container_width=True)
+            st.divider()
+    else:
+        st.caption("Henüz analiz geçmişi yok.")
+
+
 # ----------------------------------------------------------------------------
 # ÜST BAR VE YÜKLEME
 # ----------------------------------------------------------------------------
@@ -523,7 +653,6 @@ if dosyalar:
 
     imza = tuple((f.name, f.size) for f in dosyalar)
 
-    # Aynı dosyalar için sayfa yeniden çalışınca analizi ve arşiv kaydını tekrarlama
     if st.session_state.get("imza") != imza:
         with st.spinner("Modeller hazırlanıyor..."):
             clf_model, seg_model = modelleri_yukle_ve_isit()
@@ -567,23 +696,10 @@ else:
     render_bos_durum()
 
 # ----------------------------------------------------------------------------
-# ARŞİV
+# ARŞİV (filtreleme + istatistik + CSV export)
 # ----------------------------------------------------------------------------
-with st.expander("🗄️ Analiz Arşivi (Son 5 Kayıt)"):
-    gecmis = son_analizleri_getir(5)
-    if gecmis:
-        for dosya, tahmin, guven, tarih, sure, orij_yol, islenmis_yol in gecmis:
-            st.markdown(f"**{tarih}** — {dosya[:25]} → {CLASS_LABELS_TR.get(tahmin, tahmin)} (%{guven:.1f}) — {sure:.2f}s")
-            c1, c2 = st.columns(2)
-            with c1:
-                if os.path.exists(orij_yol):
-                    st.image(orij_yol, caption="Orijinal", use_container_width=True)
-            with c2:
-                if os.path.exists(islenmis_yol):
-                    st.image(islenmis_yol, caption="İşlenmiş", use_container_width=True)
-            st.divider()
-    else:
-        st.caption("Henüz analiz geçmişi yok.")
+with st.expander("🗄️ Analiz Arşivi"):
+    render_arsiv()
 
 st.markdown(
     '<div class="footer-note">⚠️ Bu sistem bir araştırma prototipidir, klinik teşhis yerine geçmez. '
