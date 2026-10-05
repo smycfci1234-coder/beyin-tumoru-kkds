@@ -14,6 +14,7 @@ import sqlite3
 import time
 import uuid
 from fpdf import FPDF
+from birlesik import render_birlesik
 
 ARSIV_KLASORU = "arsiv"
 os.makedirs(ARSIV_KLASORU, exist_ok=True)
@@ -680,12 +681,19 @@ if dosyalar:
     batch_toplam = st.session_state["batch_toplam"]
     clf_model, seg_model = modelleri_yukle_ve_isit()
 
-    tab_adlari = [f"Görsel {i+1}" for i in range(len(sonuclar))] + ["⏱️ Performans Analizi"]
+    tab_adlari = [f"Görsel {i+1}" for i in range(len(sonuclar))]
+    birlesik_var = len(sonuclar) >= 2
+    if birlesik_var:
+        tab_adlari.append("🧩 Birleşik Değerlendirme")
+    tab_adlari.append("⏱️ Performans Analizi")
     sekmeler = st.tabs(tab_adlari)
     for i, r in enumerate(sonuclar):
         with sekmeler[i]:
             st.caption(f"📄 {r['dosya_adi']}")
             render_sonuc(r)
+    if birlesik_var:
+        with sekmeler[len(sonuclar)]:
+            render_birlesik(sonuclar, CLASS_NAMES, CLASS_LABELS_TR, DUSUK_GUVEN_ESIGI)
     with sekmeler[-1]:
         render_performans(sonuclar, batch_toplam, clf_model, seg_model)
 
