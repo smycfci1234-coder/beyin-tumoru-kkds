@@ -24,6 +24,23 @@ MAX_GORSEL = 4          # tek seferde en fazla 4 görsel
 HEDEF_SURE_SN = 10.0    # proje önerisindeki hedef: görsel başına < 10 sn
 DUSUK_GUVEN_ESIGI = 70.0  # bu değerin altındaki tahminlerde uyarı gösterilir
 
+VERI_KAYNAKLARI = [
+    {
+        "amac": "Sınıflandırma (EfficientNetB4)",
+        "ad": "Brain Tumor MRI Dataset",
+        "sahip": "Masoud Nickparvar",
+        "url": "https://www.kaggle.com/datasets/masoudnickparvar/brain-tumor-mri-dataset",
+        "detay": "7.023 görüntü — glioma, meningioma, pituiter tümör, tümör yok",
+    },
+    {
+        "amac": "Segmentasyon (YOLOv11)",
+        "ad": "Brain Tumor Image Dataset: Semantic Segmentation",
+        "sahip": "pkdarabi",
+        "url": "https://www.kaggle.com/datasets/pkdarabi/brain-tumor-image-dataset-semantic-segmentation",
+        "detay": "2.146 görüntü — piksel bazlı tümör sınırı etiketleri (COCO formatı)",
+    },
+]
+
 
 # ----------------------------------------------------------------------------
 # VERİTABANI
@@ -326,9 +343,10 @@ def modelleri_yukle_ve_isit():
 
 
 # ----------------------------------------------------------------------------
-# TEK GÖRSEL ANALİZİ (süre ölçümü burada)
+# TEK GÖRSEL ANALİZİ (süre + saat ölçümü burada)
 # ----------------------------------------------------------------------------
 def analiz_et(image, dosya_adi, clf_model, seg_model):
+    islenme_zamani = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     t_basla = time.perf_counter()
 
     t0 = time.perf_counter()
@@ -366,6 +384,7 @@ def analiz_et(image, dosya_adi, clf_model, seg_model):
         "sinif_sure": sinif_sure,
         "seg_sure": seg_sure,
         "toplam_sure": toplam_sure,
+        "islenme_zamani": islenme_zamani,
     }
 
 
@@ -375,7 +394,6 @@ def arsive_kaydet(r, batch_id):
     islenmis_yol = os.path.join(ARSIV_KLASORU, f"{benzersiz_id}_islenmis.png")
     r["image"].save(orijinal_yol)
     Image.fromarray(r["center_display_img"].astype("uint8")).save(islenmis_yol)
-    # Yollar, PDF raporu gibi sonraki işlemlerde kullanılabilsin diye r içine de yazılır
     r["orijinal_yol"] = orijinal_yol
     r["islenmis_yol"] = islenmis_yol
     kaydet_analiz(r["dosya_adi"], r["pred_class"], r["confidence"],
@@ -424,7 +442,7 @@ def olustur_pdf_raporu(r):
     pdf.set_font("Helvetica", "", 11)
     pdf.ln(2)
     pdf.cell(0, 8, pdf_metin(f"Dosya: {r['dosya_adi']}"), new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 8, f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, f"Islenme Zamani: {r.get('islenme_zamani', '-')}", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 8, pdf_metin(f"Tahmin: {CLASS_LABELS_TR[r['pred_class']]}"), new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 8, f"Guven Skoru: %{r['confidence']:.1f}", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 8, f"Islem Suresi: {r['toplam_sure']:.2f} sn", new_x="LMARGIN", new_y="NEXT")
@@ -475,6 +493,7 @@ def render_sonuc(r):
             st.image(r["center_display_img"], use_container_width=True)
             st.markdown(f'<div class="center-caption">TÜMÖR TAHMİNİ: {CLASS_LABELS_TR[pred_class]}</div>', unsafe_allow_html=True)
             st.progress(float(confidence / 100), text=f"Güven: %{confidence:.1f}")
+            st.caption(f"🕒 İşlenme zamanı: {r.get('islenme_zamani', '-')}")
 
     with right:
         with st.container(border=True):
@@ -630,6 +649,40 @@ def render_arsiv():
         st.caption("Henüz analiz geçmişi yok.")
 
 
+def render_veri_kaynagi(sonuclar=None):
+    simdi = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.caption(f"🕒 Bu bilgi {simdi} tarihinde görüntülendi.")
+
+    st.markdown('<div class="panel-title">Kullanılan Veri Setleri (Kaggle)</div>', unsafe_allow_html=True)
+    for kaynak in VERI_KAYNAKLARI:
+        st.markdown(f"""
+        <div class="diag-box">
+            <div class="diag-label">{kaynak['amac']}</div>
+            <div class="diag-value" style="font-size:1rem;">{kaynak['ad']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.caption(f"👤 {kaynak['sahip']}  ·  {kaynak['detay']}")
+        st.markdown(f"🔗 [{kaynak['url']}]({kaynak['url']})")
+        st.write("")
+
+    if sonuclar:
+        st.divider()
+        st.markdown('<div class="panel-title">Bu Oturumda İşlenen Görseller İçin Kullanılan Veri Setleri</div>', unsafe_allow_html=True)
+        satirlar = []
+        for r in sonuclar:
+            kullanilan = VERI_KAYNAKLARI[0]["ad"]
+            if r["pred_class"] != "notumor":
+                kullanilan += " + " + VERI_KAYNAKLARI[1]["ad"]
+            satirlar.append({
+                "Görsel": r["dosya_adi"][:30],
+                "İşlenme Saati": r.get("islenme_zamani", "—"),
+                "Kullanılan Veri Seti(leri)": kullanilan,
+            })
+        st.dataframe(pd.DataFrame(satirlar), use_container_width=True, hide_index=True)
+    else:
+        st.caption("Henüz bu oturumda işlenmiş bir görsel yok.")
+
+
 # ----------------------------------------------------------------------------
 # ÜST BAR VE YÜKLEME
 # ----------------------------------------------------------------------------
@@ -704,10 +757,13 @@ else:
     render_bos_durum()
 
 # ----------------------------------------------------------------------------
-# ARŞİV (filtreleme + istatistik + CSV export)
+# ARŞİV + VERİ KAYNAĞI
 # ----------------------------------------------------------------------------
 with st.expander("🗄️ Analiz Arşivi"):
     render_arsiv()
+
+with st.expander("📊 Kullanılan Veri Setleri"):
+    render_veri_kaynagi(st.session_state.get("sonuclar"))
 
 st.markdown(
     '<div class="footer-note">⚠️ Bu sistem bir araştırma prototipidir, klinik teşhis yerine geçmez. '
